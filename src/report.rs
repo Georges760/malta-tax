@@ -7,7 +7,7 @@ const LABEL_WIDTH: usize = 46;
 const AMOUNT_WIDTH: usize = 12;
 
 pub fn print(input: &Input, estimate: &Estimate) {
-    let year = input.year;
+    let year = estimate.year;
     let status = input.taxpayer.tax_status;
 
     let title = format!("Malta tax estimate {year} - {}", input.taxpayer.name);
@@ -64,7 +64,7 @@ pub fn print(input: &Input, estimate: &Estimate) {
 
     section("Deductions");
     amount(
-        &format!("expenses ({})", input.expenses.len()),
+        &format!("expenses ({})", estimate.expense_count),
         estimate.expenses,
     );
     for line in &estimate.wear_and_tear {
@@ -113,7 +113,7 @@ pub fn print(input: &Input, estimate: &Estimate) {
             money(income)
         ),
         None => println!(
-            "  no {} net income: first year of activity, minimum rate",
+            "  no {} income: first year of activity, minimum rate",
             year - 1
         ),
     }
@@ -128,7 +128,7 @@ pub fn print(input: &Input, estimate: &Estimate) {
         "    {:.1} % of the gross income",
         estimate.set_aside_rate * 100.0
     );
-    for payment in &input.payments {
+    for payment in input.payments.iter().filter(|p| p.year == year) {
         let kind = match payment.kind {
             PaymentKind::ProvisionalTax => "provisional tax",
             PaymentKind::SocialSecurity => "social security",

@@ -1,4 +1,4 @@
-//! Turns an [`Input`] into the figures of the report.
+//! Turns an [`Input`] into the figures of the report for one year.
 
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 
@@ -7,6 +7,8 @@ use crate::rules::{self, Rules, round_cents};
 
 #[derive(Debug)]
 pub struct Estimate {
+    /// Basis year (calendar year in which the income is earned).
+    pub year: i32,
     pub months: Vec<MonthLine>,
     pub income_received: f64,
     pub income_projected: f64,
@@ -14,6 +16,7 @@ pub struct Estimate {
     pub projection: Option<Projection>,
     pub gross_income: f64,
     pub expenses: f64,
+    pub expense_count: usize,
     pub wear_and_tear: Vec<WearAndTear>,
     pub deductions: f64,
     /// VAT on this year's purchases, claimed back rather than deducted.
@@ -70,6 +73,7 @@ pub struct WearAndTear {
 
 #[derive(Debug)]
 pub struct SocialSecurity {
+    /// `None` when the file has no income for the year before.
     pub previous_year_net_income: Option<f64>,
     pub weekly: f64,
     pub weeks: u32,
@@ -82,48 +86,41 @@ impl Estimate {
     }
 }
 
-pub fn estimate(input: &Input, rules: &Rules) -> Result<Estimate, String> {
-    let year = input.year;
+/// Income and deductions of one year, before any tax.
+struct Accounts {
+    months: Vec<MonthLine>,
+    projection: Option<Projection>,
+    income_received: f64,
+    income_projected: f64,
+    expenses: f64,
+    expense_count: usize,
+    wear_and_tear: Vec<WearAndTear>,
+    deductions: f64,
+    vat_to_reclaim: f64,
+}
 
-    let (months, projection) = income(input)?;
-    let sum = |projected| -> f64 {
-        let lines = months.iter().filter(|m| m.projected == projected);
-        round_cents(lines.map(|m| m.eur).sum())
-    };
-    let income_received = sum(false);
-    let income_projected = sum(true);
-    let gross_income = income_received + income_projected;
-
-    let mut expenses = 0.0;
-    let mut vat_to_reclaim = 0.0;
-    for expense in &input.expenses {
-        if expense.date.year() != year {
-            return Err(format!(
-                "expense {:?} is not dated in {year}",
-                expense.description
-            ));
-        }
-        let (cost, vat) = split_vat(input, &expense.description, expense.eur, expense.vat_eur)?;
-        expenses += cost;
-        vat_to_reclaim += vat;
+impl Accounts {
+    fn gross_income(&self) -> f64 {
+        self.income_received + self.income_projected
     }
-    let expenses = round_cents(expenses);
 
-    let wear_and_tear = wear_and_tear(input)?;
-    for line in wear_and_tear.iter().filter(|w| w.year_number == 1) {
-        vat_to_reclaim += line.vat;
+    fn net_income(&self) -> f64 {
+        (self.gross_income() - self.deductions).max(0.0)
     }
-    let vat_to_reclaim = round_cents(vat_to_reclaim);
-    let deductions = expenses + wear_and_tear.iter().map(|w| w.deduction).sum::<f64>();
-    let chargeable_income = (gross_income - deductions).max(0.0);
+}
+
+pub fn estimate(input: &Input, year: i32, rules: &Rules) -> Result<Estimate, String> {
+    let accounts = accounts(input, year)?;
+    let gross_income = accounts.gross_income();
+    let chargeable_income = accounts.net_income();
 
     let status = input.taxpayer.tax_status;
     let income_tax = rules.income_tax(status, chargeable_income);
-    let planned = wear_and_tear.iter().filter(|w| w.planned);
+    let planned = accounts.wear_and_tear.iter().filter(|w| w.planned);
     let planned_deductions: f64 = planned.map(|w| w.deduction).sum();
     let income_tax_without_planned = (planned_deductions > 0.0).then(|| {
-        let chargeable_income = (gross_income - deductions + planned_deductions).max(0.0);
-        rules.income_tax(status, chargeable_income)
+        let deductions = accounts.deductions - planned_deductions;
+        rules.income_tax(status, (gross_income - deductions).max(0.0))
     });
     let income_tax_by_status = rules
         .income_tax
@@ -131,7 +128,14 @@ pub fn estimate(input: &Input, rules: &Rules) -> Result<Estimate, String> {
         .map(|(status, _)| (*status, rules.income_tax(*status, chargeable_income)))
         .collect();
 
-    let previous_year_net_income = input.social_security.previous_year_net_income_eur;
+    // The file holds every year since the activity started, so a year
+    // without income before this one means there was no activity yet.
+    let had_income = |year| input.income.iter().any(|e| e.month.year == year);
+    let previous_year_net_income = if had_income(year - 1) {
+        Some(self::accounts(input, year - 1)?.net_income())
+    } else {
+        None
+    };
     let weekly = rules.class2.weekly(previous_year_net_income);
     let weeks = contribution_weeks(year, input.taxpayer.activity_start);
     let social_security = SocialSecurity {
@@ -142,22 +146,25 @@ pub fn estimate(input: &Input, rules: &Rules) -> Result<Estimate, String> {
     };
 
     let paid = |kind| -> f64 {
-        let payments = input.payments.iter().filter(|p| p.kind == kind);
+        let payments = input.payments.iter();
+        let payments = payments.filter(|p| p.year == year && p.kind == kind);
         round_cents(payments.map(|p| p.eur).sum())
     };
 
     let total = income_tax + social_security.total;
     Ok(Estimate {
-        months,
-        income_received,
-        income_projected,
-        projection,
+        year,
         gross_income,
-        expenses,
-        wear_and_tear,
-        deductions,
-        vat_to_reclaim,
         chargeable_income,
+        months: accounts.months,
+        income_received: accounts.income_received,
+        income_projected: accounts.income_projected,
+        projection: accounts.projection,
+        expenses: accounts.expenses,
+        expense_count: accounts.expense_count,
+        wear_and_tear: accounts.wear_and_tear,
+        deductions: accounts.deductions,
+        vat_to_reclaim: accounts.vat_to_reclaim,
         income_tax,
         income_tax_without_planned,
         income_tax_by_status,
@@ -177,10 +184,51 @@ pub fn estimate(input: &Input, rules: &Rules) -> Result<Estimate, String> {
     })
 }
 
-/// One line per month, in order. Months without a EUR amount are projected
-/// at the rate of the last month received, which already includes the
-/// bank's conversion costs, or at the `fx` rate when nothing was received.
-fn income(input: &Input) -> Result<(Vec<MonthLine>, Option<Projection>), String> {
+fn accounts(input: &Input, year: i32) -> Result<Accounts, String> {
+    let (months, projection) = income(input, year)?;
+    let sum = |projected| -> f64 {
+        let lines = months.iter().filter(|m| m.projected == projected);
+        round_cents(lines.map(|m| m.eur).sum())
+    };
+    let income_received = sum(false);
+    let income_projected = sum(true);
+
+    let mut expenses = 0.0;
+    let mut expense_count = 0;
+    let mut vat_to_reclaim = 0.0;
+    for expense in &input.expenses {
+        let (cost, vat) = split_vat(input, &expense.description, expense.eur, expense.vat_eur)?;
+        if expense.date.year() == year {
+            expenses += cost;
+            expense_count += 1;
+            vat_to_reclaim += vat;
+        }
+    }
+    let expenses = round_cents(expenses);
+
+    let wear_and_tear = wear_and_tear(input, year)?;
+    for line in wear_and_tear.iter().filter(|w| w.year_number == 1) {
+        vat_to_reclaim += line.vat;
+    }
+
+    Ok(Accounts {
+        months,
+        projection,
+        income_received,
+        income_projected,
+        expenses,
+        expense_count,
+        deductions: expenses + wear_and_tear.iter().map(|w| w.deduction).sum::<f64>(),
+        wear_and_tear,
+        vat_to_reclaim: round_cents(vat_to_reclaim),
+    })
+}
+
+/// One line per month of `year`, in order. Months without a EUR amount are
+/// projected at the rate of the last month received up to that year, which
+/// already includes the bank's conversion costs, or at the `fx` rate when
+/// nothing was received.
+fn income(input: &Input, year: i32) -> Result<(Vec<MonthLine>, Option<Projection>), String> {
     let mut entries: Vec<_> = input.income.iter().collect();
     entries.sort_by_key(|e| e.month);
 
@@ -193,12 +241,6 @@ fn income(input: &Input) -> Result<(Vec<MonthLine>, Option<Projection>), String>
         }
     }
     for entry in &entries {
-        if entry.month.year != input.year {
-            return Err(format!(
-                "income month {} is not in {}",
-                entry.month, input.year
-            ));
-        }
         if entry.usd.is_some_and(|usd| usd < 0.0) || entry.eur.is_some_and(|eur| eur < 0.0) {
             return Err(format!(
                 "income month {} has a negative amount",
@@ -206,6 +248,7 @@ fn income(input: &Input) -> Result<(Vec<MonthLine>, Option<Projection>), String>
             ));
         }
     }
+    entries.retain(|e| e.month.year <= year);
 
     let last_rate = entries.iter().rev().find_map(|e| match (e.usd, e.eur) {
         (Some(usd), Some(eur)) if usd > 0.0 => Some((e.month, eur / usd)),
@@ -227,8 +270,8 @@ fn income(input: &Input) -> Result<(Vec<MonthLine>, Option<Projection>), String>
         (None, None) => None,
     };
 
-    let mut months = Vec::with_capacity(entries.len());
-    for entry in entries {
+    let mut months = Vec::new();
+    for entry in entries.into_iter().filter(|e| e.month.year == year) {
         let eur = match (entry.eur, entry.usd, &projection) {
             (Some(eur), _, _) => eur,
             (None, Some(usd), Some(projection)) => round_cents(usd * projection.eur_per_usd),
@@ -260,18 +303,11 @@ fn income(input: &Input) -> Result<(Vec<MonthLine>, Option<Projection>), String>
     Ok((months, projection.filter(|_| used)))
 }
 
-/// Straight-line wear and tear, with a full year's deduction in the year the
-/// asset is bought. Assets bought in earlier years stay in the file until
-/// they are written off.
-fn wear_and_tear(input: &Input) -> Result<Vec<WearAndTear>, String> {
+/// Straight-line wear and tear of the assets in use in `year`, with a full
+/// year's deduction in the year the asset is bought.
+fn wear_and_tear(input: &Input, year: i32) -> Result<Vec<WearAndTear>, String> {
     let mut lines = Vec::new();
     for asset in &input.assets {
-        if asset.date.year() > input.year {
-            return Err(format!(
-                "asset {:?} is dated after {}",
-                asset.description, input.year
-            ));
-        }
         if !(0.0..=100.0).contains(&asset.business_use_percent) {
             return Err(format!(
                 "asset {:?} has an invalid business use",
@@ -280,8 +316,8 @@ fn wear_and_tear(input: &Input) -> Result<Vec<WearAndTear>, String> {
         }
         let (cost, vat) = split_vat(input, &asset.description, asset.eur, asset.vat_eur)?;
         let years = rules::wear_and_tear_years(asset.category);
-        let year_number = input.year - asset.date.year() + 1;
-        if year_number > years {
+        let year_number = year - asset.date.year() + 1;
+        if !(1..=years).contains(&year_number) {
             continue;
         }
         let business_use = asset.business_use_percent / 100.0;
@@ -335,9 +371,9 @@ fn contribution_weeks(year: i32, from: Option<NaiveDate>) -> u32 {
 mod tests {
     use super::*;
 
-    fn run(json: &str) -> Result<Estimate, String> {
+    fn run(json: &str, year: i32) -> Result<Estimate, String> {
         let input: Input = serde_json::from_str(json).expect("valid input");
-        estimate(&input, rules::for_year(input.year).expect("known year"))
+        estimate(&input, year, rules::for_year(2026).expect("known year"))
     }
 
     #[test]
@@ -346,6 +382,7 @@ mod tests {
         assert_eq!(contribution_weeks(2026, None), 52);
         assert_eq!(contribution_weeks(2024, None), 53);
         assert_eq!(contribution_weeks(2026, date(2025, 7, 1)), 52);
+        assert_eq!(contribution_weeks(2026, date(2027, 7, 1)), 0);
         // Thursday 11 June 2026: the week of Monday 8 June counts, which gives
         // 13 weeks up to the end of August and 17 for the rest of the year.
         assert_eq!(contribution_weeks(2026, date(2026, 6, 11)), 13 + 17);
@@ -353,51 +390,67 @@ mod tests {
         assert_eq!(contribution_weeks(2026, date(2026, 6, 7)), 13 + 17 + 1);
     }
 
-    #[test]
-    fn full_year() {
-        let estimate = run(r#"{
-            "year": 2026,
-            "taxpayer": { "name": "Test", "tax_status": "single" },
-            "fx": { "usd_per_eur": 1.25 },
-            "income": [
-                { "month": "2026-02", "usd": 10000, "eur": null },
-                { "month": "2026-01", "usd": 10000, "eur": 10000 },
-                { "month": "2026-03", "usd": 10000, "eur": 11700 },
-                { "month": "2026-04", "usd": 10000, "eur": null }
-            ],
-            "expenses": [{ "date": "2026-03-01", "description": "Books", "eur": 100 }],
-            "assets": [
-                { "date": "2026-09-01", "description": "Laptop", "category": "computer", "eur": 2000 },
-                { "date": "2022-05-01", "description": "Old laptop", "category": "computer", "eur": 1000 },
-                { "date": "2023-05-01", "description": "Phone", "category": "computer", "eur": 800,
-                  "business_use_percent": 50 }
-            ],
-            "social_security": { "previous_year_net_income_eur": 100000 },
-            "payments": [
-                { "date": "2026-04-30", "kind": "provisional_tax", "eur": 1000 },
-                { "date": "2026-04-30", "kind": "social_security", "eur": 1454.09 }
-            ]
-        }"#)
-        .unwrap();
+    const SEVERAL_YEARS: &str = r#"{
+        "taxpayer": { "name": "Test", "tax_status": "single", "activity_start": "2025-07-01" },
+        "fx": { "usd_per_eur": 1.25 },
+        "income": [
+            { "month": "2025-12", "usd": 26000, "eur": 20800 },
+            { "month": "2026-02", "usd": 10000, "eur": null },
+            { "month": "2026-01", "usd": 10000, "eur": 10000 },
+            { "month": "2026-03", "usd": 10000, "eur": 11700 },
+            { "month": "2026-04", "usd": 10000, "eur": null },
+            { "month": "2027-01", "usd": 10000, "eur": 13000 }
+        ],
+        "expenses": [
+            { "date": "2025-11-01", "description": "Chair", "eur": 300 },
+            { "date": "2026-03-01", "description": "Books", "eur": 100 }
+        ],
+        "assets": [
+            { "date": "2026-09-01", "description": "Laptop", "category": "computer", "eur": 2000 },
+            { "date": "2022-05-01", "description": "Old laptop", "category": "computer", "eur": 1000 },
+            { "date": "2023-05-01", "description": "Phone", "category": "computer", "eur": 800,
+              "business_use_percent": 50 },
+            { "date": "2027-02-01", "description": "Desk", "category": "furniture", "eur": 500 }
+        ],
+        "payments": [
+            { "date": "2025-12-21", "year": 2025, "kind": "social_security", "eur": 940.68 },
+            { "date": "2026-04-30", "year": 2026, "kind": "provisional_tax", "eur": 1000 },
+            { "date": "2026-04-30", "year": 2026, "kind": "social_security", "eur": 1000 },
+            { "date": "2027-06-30", "year": 2026, "kind": "provisional_tax", "eur": 500 }
+        ]
+    }"#;
 
-        // Both open months are projected at March's rate, not at the fx rate.
+    #[test]
+    fn one_year_out_of_several() {
+        let estimate = run(SEVERAL_YEARS, 2026).unwrap();
+
+        // Both open months are projected at March's rate: not at the fx
+        // rate, nor at the rate of a later year.
+        assert_eq!(estimate.months.len(), 4);
         assert_eq!(estimate.income_received, 21_700.0);
         assert_eq!(estimate.income_projected, 23_400.0);
         assert!(estimate.months[1].projected && estimate.months[1].eur == 11_700.0);
 
-        // Laptop 2000 / 4, phone 400 / 4, the old laptop is written off.
+        // Laptop 2000 / 4 and phone 400 / 4. The old laptop is written off
+        // and the desk is not bought yet.
+        assert_eq!(estimate.expense_count, 1);
         assert_eq!(estimate.wear_and_tear.len(), 2);
         assert_eq!(estimate.wear_and_tear[1].year_number, 4);
         assert_eq!(estimate.deductions, 100.0 + 500.0 + 100.0);
         assert_eq!(estimate.chargeable_income, 44_400.0);
         assert_eq!(estimate.income_tax, 44_400.0 * 0.25 - 3_400.0);
 
-        assert_eq!(estimate.social_security.total, round_cents(52.0 * 83.89));
-        assert_eq!(
-            estimate.total,
-            estimate.income_tax + estimate.social_security.total
-        );
-        assert_eq!(estimate.paid(), 2_454.09);
+        // Contributions on the 2025 net income: 20 800 - 300 for the chair,
+        // 250 for the old laptop and 100 for the phone.
+        let ssc = &estimate.social_security;
+        assert_eq!(ssc.previous_year_net_income, Some(20_150.0));
+        assert_eq!(ssc.weekly, round_cents(20_150.0 * 0.15 / 52.0));
+        assert_eq!(ssc.weeks, 52);
+
+        // Payments count for the year they are for, not the year they are
+        // made in.
+        assert_eq!(estimate.paid_tax, 1_500.0);
+        assert_eq!(estimate.paid_social_security, 1_000.0);
         // 44 400 × 15 % / 52 = 128.08, capped at the maximum.
         assert_eq!(
             estimate.next_year_social_security,
@@ -406,18 +459,29 @@ mod tests {
     }
 
     #[test]
+    fn first_year_has_no_previous_income() {
+        let estimate = run(SEVERAL_YEARS, 2025).unwrap();
+        assert_eq!(estimate.gross_income, 20_800.0);
+        let ssc = &estimate.social_security;
+        assert_eq!(ssc.previous_year_net_income, None);
+        // 1 July 2025 is a Tuesday: its week and the 26 that follow.
+        assert_eq!(ssc.total, round_cents(27.0 * 36.18));
+        assert_eq!(estimate.paid_social_security, 940.68);
+    }
+
+    #[test]
     fn projects_at_fx_rate_when_nothing_is_received() {
-        let estimate = run(r#"{
-            "year": 2026,
-            "taxpayer": { "name": "Test", "tax_status": "single", "activity_start": "2026-07-01" },
-            "fx": { "usd_per_eur": 1.25 },
-            "income": [{ "month": "2026-07", "usd": 10000, "eur": null }]
-        }"#)
+        let estimate = run(
+            r#"{
+                "taxpayer": { "name": "Test", "tax_status": "single" },
+                "fx": { "usd_per_eur": 1.25 },
+                "income": [{ "month": "2026-07", "usd": 10000, "eur": null }]
+            }"#,
+            2026,
+        )
         .unwrap();
         assert_eq!(estimate.gross_income, 8_000.0);
         assert_eq!(estimate.income_tax, 0.0);
-        // 1 July 2026 is a Wednesday: its week and the 26 that follow.
-        assert_eq!(estimate.social_security.total, round_cents(27.0 * 36.18));
     }
 
     #[test]
@@ -425,7 +489,6 @@ mod tests {
         let json = |vat_recoverable: bool| {
             format!(
                 r#"{{
-                    "year": 2026,
                     "taxpayer": {{ "name": "Test", "tax_status": "single",
                                    "vat_recoverable": {vat_recoverable} }},
                     "income": [{{ "month": "2026-05", "usd": 10000, "eur": 11700 }}],
@@ -441,48 +504,58 @@ mod tests {
             )
         };
 
-        let recovered = run(&json(true)).unwrap();
+        let recovered = run(&json(true), 2026).unwrap();
         assert_eq!(recovered.deductions, 100.0 + 100.0 + 100.0);
         // The VAT on the desk was claimed back the year it was bought.
         assert_eq!(recovered.vat_to_reclaim, 18.0 + 72.0);
 
-        let not_recovered = run(&json(false)).unwrap();
+        let not_recovered = run(&json(false), 2026).unwrap();
         assert_eq!(not_recovered.deductions, 118.0 + 118.0 + 118.0);
         assert_eq!(not_recovered.vat_to_reclaim, 0.0);
     }
 
     #[test]
     fn planned_asset_is_counted_and_flagged() {
-        let estimate = run(r#"{
-            "year": 2026,
+        let json = r#"{
             "taxpayer": { "name": "Test", "tax_status": "single" },
-            "income": [{ "month": "2026-05", "usd": 130000, "eur": 100000 }],
+            "income": [
+                { "month": "2026-05", "usd": 130000, "eur": 100000 },
+                { "month": "2027-05", "usd": 130000, "eur": 100000 }
+            ],
             "assets": [
                 { "date": "2026-08-24", "description": "Screen", "category": "computer", "eur": 400 },
                 { "date": "2026-12-15", "description": "Laptop", "category": "computer", "eur": 4000,
                   "planned": true }
             ]
-        }"#)
-        .unwrap();
+        }"#;
+        let estimate = run(json, 2026).unwrap();
         assert_eq!(estimate.deductions, 100.0 + 1_000.0);
         assert_eq!(estimate.income_tax, 98_900.0 * 0.35 - 9_400.0);
         assert_eq!(
             estimate.income_tax_without_planned,
             Some(99_900.0 * 0.35 - 9_400.0)
         );
+
+        // The same assets carry on the year after, as year 2 of 4.
+        let estimate = run(json, 2027).unwrap();
+        assert_eq!(estimate.deductions, 100.0 + 1_000.0);
+        assert!(estimate.wear_and_tear.iter().all(|w| w.year_number == 2));
+        assert_eq!(estimate.vat_to_reclaim, 0.0);
     }
 
     #[test]
     fn received_month_does_not_need_usd() {
-        let estimate = run(r#"{
-            "year": 2026,
-            "taxpayer": { "name": "Test", "tax_status": "single" },
-            "income": [
-                { "month": "2026-05", "usd": 10000, "eur": 11700 },
-                { "month": "2026-06", "eur": 5000, "received": "2026-07-02" },
-                { "month": "2026-07", "usd": 10000, "eur": null }
-            ]
-        }"#)
+        let estimate = run(
+            r#"{
+                "taxpayer": { "name": "Test", "tax_status": "single" },
+                "income": [
+                    { "month": "2026-05", "usd": 10000, "eur": 11700 },
+                    { "month": "2026-06", "eur": 5000, "received": "2026-07-02" },
+                    { "month": "2026-07", "usd": 10000, "eur": null }
+                ]
+            }"#,
+            2026,
+        )
         .unwrap();
         // July is projected at May's rate, the last one that is known.
         assert_eq!(estimate.income_received, 16_700.0);
@@ -491,18 +564,25 @@ mod tests {
 
     #[test]
     fn rejects_inconsistent_input() {
-        let no_rate = run(r#"{
-            "year": 2026,
-            "taxpayer": { "name": "Test", "tax_status": "single" },
-            "income": [{ "month": "2026-07", "usd": 10000, "eur": null }]
-        }"#);
+        let no_rate = run(
+            r#"{
+                "taxpayer": { "name": "Test", "tax_status": "single" },
+                "income": [{ "month": "2026-07", "usd": 10000, "eur": null }]
+            }"#,
+            2026,
+        );
         assert!(no_rate.unwrap_err().contains("no rate to project"));
 
-        let wrong_year = run(r#"{
-            "year": 2026,
-            "taxpayer": { "name": "Test", "tax_status": "single" },
-            "income": [{ "month": "2025-12", "usd": 10000, "eur": 11000 }]
-        }"#);
-        assert!(wrong_year.unwrap_err().contains("is not in 2026"));
+        let twice = run(
+            r#"{
+                "taxpayer": { "name": "Test", "tax_status": "single" },
+                "income": [
+                    { "month": "2026-07", "usd": 10000, "eur": 11000 },
+                    { "month": "2026-07", "usd": 10000, "eur": 11000 }
+                ]
+            }"#,
+            2026,
+        );
+        assert!(twice.unwrap_err().contains("appears twice"));
     }
 }

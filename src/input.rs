@@ -1,4 +1,6 @@
-//! The JSON file describing one tax year of a self-occupied person.
+//! The JSON file holding the accounts of a self-occupied person, all years
+//! together: an asset is deducted over several years, and each year's
+//! contributions depend on the income of the year before.
 
 use std::fmt;
 
@@ -8,8 +10,6 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
-    /// Basis year (calendar year in which the income is earned).
-    pub year: i32,
     pub taxpayer: Taxpayer,
     /// Only used to project months that have no EUR amount yet, and only
     /// when no month has been received at all.
@@ -20,9 +20,14 @@ pub struct Input {
     #[serde(default)]
     pub assets: Vec<Asset>,
     #[serde(default)]
-    pub social_security: SocialSecurity,
-    #[serde(default)]
     pub payments: Vec<Payment>,
+}
+
+impl Input {
+    /// Last year that has income, the one estimated by default.
+    pub fn latest_year(&self) -> Option<i32> {
+        self.income.iter().map(|entry| entry.month.year).max()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,8 +35,8 @@ pub struct Input {
 pub struct Taxpayer {
     pub name: String,
     pub tax_status: TaxStatus,
-    /// First day of the activity, when it started during the year. Class 2
-    /// contributions are only due from the week of that day on.
+    /// First day of the activity. Class 2 contributions are only due from
+    /// the week of that day on.
     pub activity_start: Option<NaiveDate>,
     /// Whether the VAT paid on purchases is claimed back (Article 10
     /// registration). It is then left out of what is deducted.
@@ -134,19 +139,14 @@ pub enum AssetCategory {
     OtherMachinery,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SocialSecurity {
-    /// Net income of the year before, on which this year's Class 2
-    /// contributions are based. `null` when there was none (first year).
-    pub previous_year_net_income_eur: Option<f64>,
-}
-
-/// A payment already made towards this year's tax or contributions.
+/// A payment made towards the tax or the contributions of a year.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Payment {
     pub date: NaiveDate,
+    /// Year the payment is for, which is not always the year it is made in:
+    /// the balance of a year's income tax is paid the year after.
+    pub year: i32,
     pub kind: PaymentKind,
     pub eur: f64,
     /// Payment reference number given by the tax administration.
