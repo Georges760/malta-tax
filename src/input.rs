@@ -31,8 +31,12 @@ pub struct Taxpayer {
     pub name: String,
     pub tax_status: TaxStatus,
     /// First day of the activity, when it started during the year. Class 2
-    /// contributions are only due for the weeks from that day on.
+    /// contributions are only due from the week of that day on.
     pub activity_start: Option<NaiveDate>,
+    /// Whether the VAT paid on purchases is claimed back (Article 10
+    /// registration). It is then left out of what is deducted.
+    #[serde(default)]
+    pub vat_recoverable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -74,11 +78,13 @@ pub struct Fx {
 pub struct Income {
     /// Month the invoice relates to, `YYYY-MM`.
     pub month: Month,
-    /// Amount invoiced.
-    pub usd: f64,
+    /// Amount invoiced. Needed to project a month that is not paid yet.
+    pub usd: Option<f64>,
     /// Amount received in EUR; `null` while the month is not paid yet, in
     /// which case it is projected.
     pub eur: Option<f64>,
+    /// Day the payment arrived.
+    pub received: Option<NaiveDate>,
     pub note: Option<String>,
 }
 
@@ -88,8 +94,11 @@ pub struct Income {
 pub struct Expense {
     pub date: NaiveDate,
     pub description: String,
-    /// Excluding VAT when the VAT is recovered, including it otherwise.
+    /// Price paid, VAT included.
     pub eur: f64,
+    /// VAT included in the price.
+    #[serde(default)]
+    pub vat_eur: f64,
 }
 
 /// A capital asset, deducted over several years through wear and tear.
@@ -100,10 +109,16 @@ pub struct Asset {
     pub date: NaiveDate,
     pub description: String,
     pub category: AssetCategory,
-    /// Excluding VAT when the VAT is recovered, including it otherwise.
+    /// Price paid, VAT included.
     pub eur: f64,
+    /// VAT included in the price.
+    #[serde(default)]
+    pub vat_eur: f64,
     #[serde(default = "full_use")]
     pub business_use_percent: f64,
+    /// Not bought yet: the date and the amounts are what is expected.
+    #[serde(default)]
+    pub planned: bool,
 }
 
 fn full_use() -> f64 {
@@ -134,6 +149,8 @@ pub struct Payment {
     pub date: NaiveDate,
     pub kind: PaymentKind,
     pub eur: f64,
+    /// Payment reference number given by the tax administration.
+    pub reference: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

@@ -19,23 +19,22 @@ pub fn print(input: &Input, estimate: &Estimate) {
         "month", "USD", "EUR", "EUR/USD"
     );
     for line in &estimate.months {
-        let rate = if line.usd > 0.0 {
-            format!("{:.4}", line.eur / line.usd)
-        } else {
-            String::new()
+        let usd = line.usd.map(money).unwrap_or_default();
+        let rate = match line.usd {
+            Some(usd) if usd > 0.0 => format!("{:.4}", line.eur / usd),
+            _ => String::new(),
         };
-        let mut remark = if line.projected {
-            "  projected".to_owned()
-        } else {
-            String::new()
+        let mut remark = match line.received {
+            Some(date) => format!("  received {date}"),
+            None if line.projected => "  projected".to_owned(),
+            None => String::new(),
         };
         if let Some(note) = &line.note {
             remark.push_str(&format!("  ({note})"));
         }
         println!(
-            "  {:<9}{:>12}{:>12}{rate:>10}{remark}",
+            "  {:<9}{usd:>12}{:>12}{rate:>10}{remark}",
             line.month,
-            money(line.usd),
             money(line.eur)
         );
     }
@@ -70,19 +69,28 @@ pub fn print(input: &Input, estimate: &Estimate) {
     );
     for line in &estimate.wear_and_tear {
         amount(
-            &format!(
-                "wear and tear: {}, year {} of {}",
-                line.description, line.year_number, line.years
-            ),
+            &format!("wear and tear, year {} of {}", line.year_number, line.years),
             line.deduction,
         );
-        println!("    {} EUR bought on {}", money(line.cost), line.date);
+        println!(
+            "    {}: {} EUR, {} on {}",
+            line.description,
+            money(line.cost),
+            if line.planned { "planned" } else { "bought" },
+            line.date
+        );
     }
     amount("total deductions", estimate.deductions);
+    if estimate.vat_to_reclaim > 0.0 {
+        amount("VAT to claim back, not deducted", estimate.vat_to_reclaim);
+    }
 
     section("Income tax");
     amount("chargeable income", estimate.chargeable_income);
     amount(&format!("income tax, {status} rates"), estimate.income_tax);
+    if let Some(tax) = estimate.income_tax_without_planned {
+        amount("  if the planned purchases slip to next year", tax);
+    }
     println!("  under the other rates, for comparison:");
     for (other, tax) in &estimate.income_tax_by_status {
         if *other != status {
@@ -126,8 +134,16 @@ pub fn print(input: &Input, estimate: &Estimate) {
             PaymentKind::SocialSecurity => "social security",
         };
         amount(&format!("paid on {}: {kind}", payment.date), -payment.eur);
+        if let Some(reference) = &payment.reference {
+            println!("    reference {reference}");
+        }
     }
     amount("still to pay", estimate.total - estimate.paid());
+    amount("  income tax", estimate.income_tax - estimate.paid_tax);
+    amount(
+        "  social security",
+        ssc.total - estimate.paid_social_security,
+    );
 
     section("To set aside");
     println!(
