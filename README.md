@@ -12,6 +12,29 @@ aside. It is written for someone who invoices in USD and is paid in EUR.
 It is an estimate, not a tax return, and not tax advice. The rules live in
 `src/rules.rs`, one set per year, each with its source.
 
+## Terminal interface
+
+    cargo run -- --tui example.json
+
+shows the same report as a dashboard: the key figures, how much of the year's
+income is in and how much is paid, then every section in a scrollable panel.
+
+![The terminal interface on the example accounts, two screens stitched into one](doc/tui.png)
+
+| Key | |
+|---|---|
+| `←` `→` or `h` `l` | previous or next year |
+| `↑` `↓` or `k` `j`, `PgUp` `PgDn`, `Home` `End` | scroll |
+| `q` or `Esc` | quit |
+
+The year arrows and the scrollbar also answer to the mouse.
+
+It is built on [blit](https://github.com/nicoburniske/blit), which needs a
+terminal that speaks the kitty keyboard protocol, such as Kitty or Ghostty.
+blit is experimental and not on crates.io, so it is a git dependency pinned to
+a commit, behind the default `tui` feature: `cargo build
+--no-default-features` builds without it.
+
 ## Limits
 
 - Only the rules of basis year 2026 are in.
