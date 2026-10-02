@@ -1,0 +1,39 @@
+{
+  "taxpayer": {
+    "name": "Maria Borg",
+    "tax_status": "single",
+    "activity_start": "2026-03-02",
+    "vat_recoverable": true
+  },
+  "income": [
+    { "month": "2026-03", "usd": 10000, "eur": 8650.00, "received": "2026-03-31" },
+    { "month": "2026-04", "usd": 10000, "eur": 8712.40, "received": "2026-04-30" },
+    { "month": "2026-05", "usd": 10000, "eur": 8598.15, "received": "2026-05-29" },
+    { "month": "2026-06", "usd": 10000, "eur": 8634.90, "received": "2026-06-30" },
+    { "month": "2026-07", "usd": 10000, "eur": 8701.25, "received": "2026-07-31" },
+    { "month": "2026-08", "usd": 10000, "eur": 8580.60, "received": "2026-08-31" },
+    { "month": "2026-09", "usd": 10000, "eur": 8642.10, "received": "2026-09-30" },
+    { "month": "2026-10", "usd": 10000, "eur": null },
+    { "month": "2026-11", "usd": 10000, "eur": null },
+    { "month": "2026-12", "usd": 10000, "eur": null }
+  ],
+  "expenses": [
+    { "date": "2026-04-14", "description": "Professional insurance", "eur": 240.00 },
+    { "date": "2026-06-02", "description": "Technical books", "eur": 94.40, "vat_eur": 14.40 }
+  ],
+  "assets": [
+    { "date": "2026-03-10", "description": "Laptop", "category": "computer", "eur": 2360.00, "vat_eur": 360.00 },
+    {
+      "date": "2026-11-16",
+      "description": "Monitor",
+      "category": "computer",
+      "eur": 590.00,
+      "vat_eur": 90.00,
+      "planned": true
+    }
+  ],
+  "payments": [
+    { "date": "2026-04-30", "year": 2026, "kind": "social_security", "eur": 325.62, "reference": "1234567890" },
+    { "date": "2026-08-31", "year": 2026, "kind": "social_security", "eur": 651.24, "reference": "1234567891" }
+  ]
+}

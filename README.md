@@ -2,13 +2,25 @@
 
 Estimates the Maltese income tax and Class 2 social security contributions of
 a self-occupied person for one year, from a JSON file, to know how much to set
-aside.
+aside. It is written for someone who invoices in USD and is paid in EUR.
 
-    cargo run -- accounts.json          # the last year that has income
-    cargo run -- accounts.json 2026     # a given year
+    cargo run -- example.json          # the last year that has income
+    cargo run -- example.json 2026     # a given year
 
-It is an estimate, not a tax return. The rules live in `src/rules.rs`, one set
-per year (2026 only for now).
+`example.json` is a made-up set of accounts to start from.
+
+It is an estimate, not a tax return, and not tax advice. The rules live in
+`src/rules.rs`, one set per year, each with its source.
+
+## Limits
+
+- Only the rules of basis year 2026 are in.
+- Class 2 contributions are those of a self-occupied person born on or after
+  1 January 1962.
+- Three rules come from secondary sources and were not checked against the
+  legal text: a full year of wear and tear in the year an asset is bought,
+  Class 2 contributions not being deductible from the chargeable income, and
+  the 2026 ceiling of the Class 2 contributions.
 
 ## The JSON file
 
@@ -66,3 +78,9 @@ of the year before.
 The Class 2 contributions of a year are based on the net income the file
 gives for the year before. A year before which the file has no income is
 taken as the first year of activity, at the minimum rate.
+
+## License
+
+Licensed under either of the Apache License, Version 2.0
+([LICENSE-APACHE](LICENSE-APACHE)) or the MIT license
+([LICENSE-MIT](LICENSE-MIT)), at your option.
