@@ -304,7 +304,9 @@ fn income(input: &Input, year: i32) -> Result<(Vec<MonthLine>, Option<Projection
 }
 
 /// Straight-line wear and tear of the assets in use in `year`, with a full
-/// year's deduction in the year the asset is bought.
+/// year's deduction in the year the asset is bought (S.L. 123.01, rule 7).
+/// The same rule gives no deduction in the year an asset is disposed of,
+/// which the file has no way to record yet.
 fn wear_and_tear(input: &Input, year: i32) -> Result<Vec<WearAndTear>, String> {
     let mut lines = Vec::new();
     for asset in &input.assets {

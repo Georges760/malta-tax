@@ -40,10 +40,14 @@ a commit, behind the default `tui` feature: `cargo build
 - Only the rules of basis year 2026 are in.
 - Class 2 contributions are those of a self-occupied person born on or after
   1 January 1962.
-- Three rules come from secondary sources and were not checked against the
-  legal text: a full year of wear and tear in the year an asset is bought,
-  Class 2 contributions not being deductible from the chargeable income, and
-  the 2026 ceiling of the Class 2 contributions.
+- One figure comes from secondary sources and was not checked against an
+  official one: the 2026 ceiling of the Class 2 contributions.
+- That Class 2 contributions are not deductible from the chargeable income
+  was confirmed in writing by the tax administration in October 2026.
+- Wear and tear follows S.L. 123.01: straight line over the minimum number
+  of years of its Schedule, with a full year in the year an asset is bought.
+  The disposal of an asset, a year in which the same rules give no
+  deduction, cannot be recorded yet.
 
 ## The JSON file
 
