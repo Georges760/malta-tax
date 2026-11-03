@@ -1,15 +1,14 @@
 //! Terminal interface: the report as a scrollable dashboard.
 
 use std::io;
-use std::rc::Rc;
 
-use blit::{Input, Key, Sense, Sides, Sizing};
-use blit_tui::Ui;
+use blit::{Key, KeyboardEvent, Sides, Sizing};
 use blit_tui::atom::{Border, BorderStyle, Gauge};
 use blit_tui::color::Color;
 use blit_tui::layout::{Align, flex};
 use blit_tui::text::{HorizontalAlign, TextAttributes, TextOptions, TextWrap};
-use blit_tui::widget::{Block, Text, Title, scroll_area};
+use blit_tui::widget::{Block, ScrollArea, ScrollState, Text, Title};
+use blit_tui::{BoundsClip, Ui, interact};
 
 use crate::estimate::Estimate;
 use crate::input::Input as Accounts;
@@ -21,8 +20,8 @@ const BORDER: Color = Color::DARK_GRAY;
 const STRONG: Color = Color::WHITE;
 
 /// Below this width the sections are stacked in one column.
-const TWO_COLUMNS: f32 = 150.0;
-const PANEL_WIDTH: f32 = 100.0;
+const TWO_COLUMNS: i32 = 150;
+const PANEL_WIDTH: i32 = 100;
 
 pub fn run(accounts: &Accounts, year: i32) -> io::Result<()> {
     let mut app = App::new(accounts, year);
@@ -35,7 +34,7 @@ struct App<'a> {
     years: Vec<i32>,
     year: i32,
     view: Result<(Estimate, Report), String>,
-    scroll: scroll_area::State,
+    scroll: ScrollState,
 }
 
 impl<'a> App<'a> {
@@ -49,7 +48,7 @@ impl<'a> App<'a> {
             years,
             year,
             view: crate::evaluate(accounts, year),
-            scroll: scroll_area::State::new(),
+            scroll: ScrollState::new(),
         }
     }
 
@@ -62,81 +61,67 @@ impl<'a> App<'a> {
         if let Some(&year) = self.years.get(index) {
             self.year = year;
             self.view = crate::evaluate(self.accounts, year);
-            self.scroll = scroll_area::State::new();
+            self.scroll = ScrollState::new();
         }
     }
 
     fn show(&mut self, mut ui: Ui<'_>) {
         let mut scroll = None;
-        match *ui.input() {
-            Input::Text('q') => return ui.context().quit(),
-            Input::Text('h') => self.select(-1),
-            Input::Text('l') => self.select(1),
-            Input::Text('k') => scroll = Some(Scroll::Lines(-2.0)),
-            Input::Text('j') => scroll = Some(Scroll::Lines(2.0)),
-            Input::Key(key) if key.pressed => match key.key {
-                Key::Escape => return ui.context().quit(),
-                Key::ArrowLeft => self.select(-1),
-                Key::ArrowRight => self.select(1),
-                Key::ArrowUp => scroll = Some(Scroll::Lines(-2.0)),
-                Key::ArrowDown => scroll = Some(Scroll::Lines(2.0)),
-                Key::PageUp => scroll = Some(Scroll::Pages(-1.0)),
-                Key::PageDown => scroll = Some(Scroll::Pages(1.0)),
-                Key::Home => scroll = Some(Scroll::Top),
-                Key::End => scroll = Some(Scroll::Bottom),
-                _ => {}
-            },
-            _ => {}
+        match ui.interact(interact::keyboard(action)) {
+            Some(Action::Quit) => return ui.context_mut().quit(),
+            Some(Action::Year(step)) => self.select(step),
+            Some(Action::Scroll(asked)) => scroll = Some(asked),
+            None => {}
         }
 
         let wide = ui.screen().size().width >= TWO_COLUMNS;
         let first = self.years.first() == Some(&self.year);
         let last = self.years.last() == Some(&self.year);
-        let mut root = ui.layout(flex::column().padding(Sides::x(1.0)).gap(1.0));
+        let mut root = ui.layout(flex::column().padding(Sides::x(1)).gap(1));
 
         let step = root
             .child()
-            .item(flex::item().height(Sizing::fixed(1.0)))
+            .item(flex::item().height(Sizing::fixed(1)))
             .build(|ui: Ui<'_>| header(ui, &self.accounts.taxpayer.name, self.year, first, last));
 
         match &self.view {
             Ok((estimate, report)) => {
                 root.child()
-                    .item(flex::item().height(Sizing::fixed(4.0)))
+                    .item(flex::item().height(Sizing::fixed(4)))
                     .build(|ui: Ui<'_>| cards(ui, self.accounts, estimate));
                 root.child()
-                    .item(flex::item().height(Sizing::fixed(1.0)))
+                    .item(flex::item().height(Sizing::fixed(1)))
                     .build(|ui: Ui<'_>| progress(ui, estimate));
-                root.child()
-                    .item(flex::item().grow())
-                    .build(scroll_area::new(
-                        &mut self.scroll,
-                        scroll_area::Config::new(),
-                        |ui: Ui<'_>| sections(ui, &report.sections, wide),
-                        |active| {
-                            let thumb = if active { ACCENT } else { DIM };
-                            (
-                                Some(Block::new().background(Color::BLACK)),
-                                Some(Block::new().background(thumb)),
-                            )
-                        },
-                    ));
+                root.child().item(flex::item().grow()).build(
+                    ScrollArea::new(&mut self.scroll)
+                        .clip(BoundsClip)
+                        .build_scrollbar(
+                            |ui: Ui<'_>| sections(ui, &report.sections, wide),
+                            |mut ui: Ui<'_>| ui.insert(Block::new().background(Color::BLACK)),
+                            |mut ui: Ui<'_>, active: bool| {
+                                let thumb = if active { ACCENT } else { DIM };
+                                ui.insert(Block::new().background(thumb));
+                            },
+                        ),
+                );
                 // The scroll area has just measured itself: only now is the
                 // extent of a page, or of the whole content, known.
                 if let Some(scroll) = scroll {
                     let state = &mut self.scroll;
                     match scroll {
-                        Scroll::Lines(lines) => state.scroll_by(lines),
-                        Scroll::Pages(pages) => state.scroll_by(pages * state.viewport_extent),
-                        Scroll::Top => state.scroll_to(0.0),
-                        Scroll::Bottom => state.scroll_to(state.maximum_offset()),
+                        Scroll::Lines(lines) => state.scroll_by(lines, None),
+                        Scroll::Pages(pages) => {
+                            state.scroll_by(pages * state.viewport_extent, None)
+                        }
+                        Scroll::Top => state.scroll_to(0, None),
+                        Scroll::Bottom => state.scroll_to(state.maximum_offset(), None),
                     }
                     root.request_frame();
                 }
             }
             Err(error) => {
                 root.child().item(flex::item().grow()).build(|ui: Ui<'_>| {
-                    let mut panel = ui.layout(flex::column().padding(Sides::xy(2.0, 1.0)));
+                    let mut panel = ui.layout(flex::column().padding(Sides::xy(2, 1)));
                     panel.insert(frame(" NO ESTIMATE "));
                     panel.child().insert(Text::new(error).options(wrapped()));
                 });
@@ -144,7 +129,7 @@ impl<'a> App<'a> {
         }
 
         root.child()
-            .item(flex::item().height(Sizing::fixed(1.0)))
+            .item(flex::item().height(Sizing::fixed(1)))
             .insert(Text::new("←/→ year   ↑/↓ PgUp/PgDn scroll   q quit").color(DIM));
 
         if step != 0 {
@@ -154,17 +139,50 @@ impl<'a> App<'a> {
     }
 }
 
+/// What a key asks for.
+#[derive(Clone, Copy)]
+enum Action {
+    Quit,
+    /// The year before (`-1`) or after (`1`).
+    Year(isize),
+    Scroll(Scroll),
+}
+
 /// A move of the report asked for with the keyboard.
+#[derive(Clone, Copy)]
 enum Scroll {
-    Lines(f32),
-    Pages(f32),
+    Lines(i32),
+    Pages(i32),
     Top,
     Bottom,
 }
 
+fn action(event: KeyboardEvent) -> Option<Action> {
+    Some(match event {
+        KeyboardEvent::Text('q') => Action::Quit,
+        KeyboardEvent::Text('h') => Action::Year(-1),
+        KeyboardEvent::Text('l') => Action::Year(1),
+        KeyboardEvent::Text('k') => Action::Scroll(Scroll::Lines(-2)),
+        KeyboardEvent::Text('j') => Action::Scroll(Scroll::Lines(2)),
+        KeyboardEvent::Key(key) if key.pressed => match key.key {
+            Key::Escape => Action::Quit,
+            Key::ArrowLeft => Action::Year(-1),
+            Key::ArrowRight => Action::Year(1),
+            Key::ArrowUp => Action::Scroll(Scroll::Lines(-2)),
+            Key::ArrowDown => Action::Scroll(Scroll::Lines(2)),
+            Key::PageUp => Action::Scroll(Scroll::Pages(-1)),
+            Key::PageDown => Action::Scroll(Scroll::Pages(1)),
+            Key::Home => Action::Scroll(Scroll::Top),
+            Key::End => Action::Scroll(Scroll::Bottom),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
 /// The title bar. Returns the step asked for with the year arrows.
 fn header(ui: Ui<'_>, name: &str, year: i32, first: bool, last: bool) -> isize {
-    let mut row = ui.layout(flex::row().gap(1.0).align(Align::Center));
+    let mut row = ui.layout(flex::row().gap(1).align(Align::Center));
     row.child().build(|ui: Ui<'_>| {
         let mut badge = ui.layout(flex::row());
         badge.insert(Block::new().background(ACCENT));
@@ -190,14 +208,14 @@ fn header(ui: Ui<'_>, name: &str, year: i32, first: bool, last: bool) -> isize {
 /// A clickable arrow. Returns whether it was clicked.
 fn arrow(label: &str, enabled: bool) -> impl FnOnce(Ui<'_>) -> bool {
     move |mut ui: Ui<'_>| {
-        let interaction = ui.interact(Sense::CLICK);
-        let color = match (enabled, interaction.hovered) {
+        let press = ui.interact(interact::press());
+        let color = match (enabled, press.hovered) {
             (false, _) => DIM,
             (true, true) => STRONG,
             (true, false) => ACCENT,
         };
         ui.insert(Text::new(label).color(color));
-        enabled && interaction.clicked
+        enabled && press.clicked
     }
 }
 
@@ -228,10 +246,10 @@ fn cards(ui: Ui<'_>, accounts: &Accounts, estimate: &Estimate) {
             "of each payment".to_owned(),
         ),
     ];
-    let mut row = ui.layout(flex::row().gap(1.0));
+    let mut row = ui.layout(flex::row().gap(1));
     for (title, value, note) in &cards {
         row.child().item(flex::item().grow()).build(|ui: Ui<'_>| {
-            let mut card = ui.layout(flex::column().padding(Sides::xy(2.0, 1.0)));
+            let mut card = ui.layout(flex::column().padding(Sides::xy(2, 1)));
             card.insert(frame(title));
             card.child().insert(
                 Text::new(value)
@@ -244,33 +262,37 @@ fn cards(ui: Ui<'_>, accounts: &Accounts, estimate: &Estimate) {
 }
 
 /// How much of the year's income is in, and how much of the total is paid.
-fn progress(ui: Ui<'_>, estimate: &Estimate) {
+fn progress(mut ui: Ui<'_>, estimate: &Estimate) {
     let ratio = |part: f64, whole: f64| if whole > 0.0 { part / whole } else { 0.0 };
+    let received = format!(
+        "received {} of {} EUR",
+        money(estimate.income_received),
+        money(estimate.gross_income)
+    );
+    let paid = format!(
+        "paid {} of {} EUR",
+        money(estimate.paid()),
+        money(estimate.total)
+    );
+    // A gauge takes its label as a text run of the renderer.
+    let renderer = ui.context_mut().renderer_mut();
     let gauges = [
         (
             ratio(estimate.income_received, estimate.gross_income),
-            format!(
-                "received {} of {} EUR",
-                money(estimate.income_received),
-                money(estimate.gross_income)
-            ),
+            renderer.text_run(&received),
             Color::GREEN,
         ),
         (
             ratio(estimate.paid(), estimate.total),
-            format!(
-                "paid {} of {} EUR",
-                money(estimate.paid()),
-                money(estimate.total)
-            ),
+            renderer.text_run(&paid),
             Color::BLUE,
         ),
     ];
-    let mut row = ui.layout(flex::row().gap(1.0));
+    let mut row = ui.layout(flex::row().gap(1));
     for (ratio, label, color) in gauges {
         row.child().item(flex::item().grow()).insert(
             Gauge::new(ratio)
-                .label(Rc::from(label))
+                .label(label)
                 .filled(color)
                 .unfilled(Color::BLACK)
                 .label_color(STRONG),
@@ -285,7 +307,7 @@ fn sections(ui: Ui<'_>, sections: &[Section], wide: bool) {
     }
     // The income table and the deductions on the left, the taxes on the right.
     let (left, right) = sections.split_at(sections.len().min(2));
-    let mut row = ui.layout(flex::row().gap(1.0));
+    let mut row = ui.layout(flex::row().gap(1));
     for half in [left, right] {
         row.child()
             .item(flex::item().width(Sizing::grow()))
@@ -294,12 +316,12 @@ fn sections(ui: Ui<'_>, sections: &[Section], wide: bool) {
 }
 
 fn column(ui: Ui<'_>, sections: &[Section]) {
-    let mut column = ui.layout(flex::column().gap(1.0).align(Align::Start));
+    let mut column = ui.layout(flex::column().gap(1).align(Align::Start));
     for section in sections {
         // Wider than this, an amount is too far from its label to be read.
         column
             .child()
-            .item(flex::item().width(Sizing::grow_range(0.0, PANEL_WIDTH)))
+            .item(flex::item().width(Sizing::grow_range(0, PANEL_WIDTH)))
             .build(|ui: Ui<'_>| panel(ui, section));
     }
 }
@@ -314,7 +336,7 @@ fn panel(ui: Ui<'_>, section: &Section) {
             }
         )
     });
-    let mut panel = ui.layout(flex::column().padding(Sides::xy(2.0, 1.0)));
+    let mut panel = ui.layout(flex::column().padding(Sides::xy(2, 1)));
     panel.insert(frame(&format!(" {} ", section.title.to_uppercase())));
     for row in &section.rows {
         match row {
@@ -360,7 +382,7 @@ fn panel(ui: Ui<'_>, section: &Section) {
                         .item(flex::item().width(Sizing::grow()))
                         .insert(Text::new(&label).color(color).attributes(attributes));
                     line.child()
-                        .item(flex::item().width(Sizing::fixed(14.0)))
+                        .item(flex::item().width(Sizing::fixed(14)))
                         .insert(
                             Text::new(&money(*value))
                                 .color(color)
@@ -370,14 +392,14 @@ fn panel(ui: Ui<'_>, section: &Section) {
                     if remarks {
                         let remark = remark.as_deref().unwrap_or_default();
                         line.child()
-                            .item(flex::item().width(Sizing::fixed(12.0)))
+                            .item(flex::item().width(Sizing::fixed(12)))
                             .insert(Text::new(remark).color(DIM).options(right()));
                     }
                 });
             }
             Row::Text { text, indent } => {
                 // Wrapping drops leading spaces, so the indent is a cell.
-                let margin = if *indent { 2.0 } else { 0.0 };
+                let margin = if *indent { 2 } else { 0 };
                 let mut line = panel.child().layout(flex::row());
                 line.child()
                     .item(flex::item().width(Sizing::fixed(margin)))
@@ -389,7 +411,7 @@ fn panel(ui: Ui<'_>, section: &Section) {
             Row::Gap => {
                 panel
                     .child()
-                    .item(flex::item().height(Sizing::fixed(1.0)))
+                    .item(flex::item().height(Sizing::fixed(1)))
                     .insert(());
             }
         }
@@ -401,9 +423,9 @@ fn month(ui: Ui<'_>, cells: [&str; 5], color: Color, attributes: TextAttributes)
     let [name, usd, eur, rate, remark] = cells;
     let mut line = ui.layout(flex::row());
     line.child()
-        .item(flex::item().width(Sizing::fixed(9.0)))
+        .item(flex::item().width(Sizing::fixed(9)))
         .insert(Text::new(name).color(color).attributes(attributes));
-    for (cell, width) in [(usd, 12.0), (eur, 12.0), (rate, 10.0)] {
+    for (cell, width) in [(usd, 12), (eur, 12), (rate, 10)] {
         line.child()
             .item(flex::item().width(Sizing::fixed(width)))
             .insert(Text::new(cell).color(color).options(right()));
@@ -436,7 +458,7 @@ fn wrapped() -> TextOptions {
 mod tests {
     use std::time::Duration;
 
-    use blit::{Frame, FrameInfo, KeyInput, LayoutResolution, Size};
+    use blit::{Frame, FrameInfo, Input, KeyInput, PhysicalSize};
     use blit_tui::{RendererConfig, TuiContext, TuiRenderer};
 
     use super::*;
@@ -446,23 +468,21 @@ mod tests {
     struct Screen {
         context: TuiContext,
         frame: Frame<TuiContext>,
-        info: FrameInfo,
+        info: FrameInfo<i32>,
     }
 
     impl Screen {
         fn new(columns: u16, rows: u16) -> Self {
             let config = RendererConfig::new().columns(columns).rows(rows);
-            let size = Size::new(f32::from(columns), f32::from(rows));
+            let size = PhysicalSize::new(i32::from(columns), i32::from(rows));
             Self {
                 context: TuiContext::new(TuiRenderer::new(config)),
                 frame: Frame::default(),
-                info: FrameInfo::new(size).layout_resolution(LayoutResolution::Discrete {
-                    step: Size::uniform(1.0),
-                }),
+                info: FrameInfo::new(size),
             }
         }
 
-        fn show(&mut self, app: &mut App<'_>, input: Input) -> String {
+        fn show(&mut self, app: &mut App<'_>, input: Input<i32>) -> String {
             let time = Duration::ZERO;
             self.frame
                 .build(&mut self.context, self.info, time, input, |ui: Ui<'_>| {
